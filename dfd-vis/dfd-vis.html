@@ -1,0 +1,257 @@
+<html>
+<head>
+    <title>データフロー図</title>
+</head>
+
+<body>
+    <div id="container"></div>
+    <script id="data">
+        // データフローの定義（Excelからコピペして更新する運用を想定）
+        const defTableTSV = `
+#	タイプ	名称	グループ	色	メモ	INPUT(#)	OUTPUT(#)	INPUT	OUTPUT
+1	データストア	システム	データソース	強調	テスト				
+2	プロセス	エクスポート	データソース	青		1	3		
+3	帳票	帳票							
+4	外的要素	ユーザー		赤					
+5	プロセス	インプット				4	1		
+`
+
+        const columnDefForNode = {
+            "id": "#",
+            "type": "タイプ",
+            "label": "名称",
+            "title": "メモ",
+            "color": "色",
+            "group": "グループ",
+        };
+
+
+        // "color"列の値と色の対応付け  
+        const colorDef = {
+            "白": { border: "#404040", background: "#ffffff", highlight: { border: "#404040", background: "#d9d9d9" } },
+            "青": { border: "#5b9bd5", background: "#deebf7", highlight: { border: "#5b9bd5", background: "#9dc3e6" } },
+            "赤": { border: "#ed7d31", background: "#fbe5d6", highlight: { border: "#ed7d31", background: "#f4b183" } },
+            "黄": { border: "#ffc000", background: "#fff2cc", highlight: { border: "#ffc000", background: "#ffd965" } },
+            "緑": { border: "#70ad47", background: "#e2efd9", highlight: { border: "#70ad47", background: "#a8d08d" } },
+            "強調": { border: "#ff0000", background: "#ffff00", highlight: { border: "#ff0000", background: "#DBD600" } },
+        };
+        const defaultColor = "白";
+
+        // データフロー図のノード種別と"type"列の値の対応付け
+        const nodeTypeDef = {
+            "datastore": "データストア",
+            "document": "帳票",
+            "external": "外的要素",
+            "process": "プロセス",
+        };
+
+        // 出力される図の形を決めるパラメータ（適当に値を変えると図の配置が変わる）
+        const randomSeed = 100;
+
+    </script>
+    <script id="definitionStringProcessor">
+        function createNodeObjFromRowObj(rowObj, shape, ctxRenderer) {
+            return {
+                id: rowObj[columnDefForNode.id],
+                physics: false,
+                shape: shape,
+                ctxRenderer: ctxRenderer,
+                label: rowObj[columnDefForNode.label],
+                group: rowObj[columnDefForNode.group].length > 0 ? rowObj[columnDefForNode.group] : undefined,
+                title: rowObj[columnDefForNode.title].length > 0 ? rowObj[columnDefForNode.title] : undefined,
+                color: rowObj[columnDefForNode.color] ? colorDef[rowObj[columnDefForNode.color]] : colorDef[defaultColor],
+            }
+        }
+        function createDataFromDefString(defString) {
+            const columns = [];
+            const nodes = [];
+            const edges = [];
+            const groups = {};
+            const inplicitGroups = {}
+            for (const line of defString.split(/\n|\r\n/)) {
+                const cells = line.split(/\t/);
+                if (line.startsWith('#')) {
+                    Array.prototype.push.apply(columns, cells);
+                } else if (columns.length > 0 && !!cells[1]) {
+                    const rowObj = {};
+                    columns.forEach((k, i) => rowObj[k] = cells[i]);
+                    switch (rowObj[columnDefForNode.type]) {
+                        case nodeTypeDef.datastore:
+                            nodes.push(createNodeObjFromRowObj(rowObj, "custom",
+                                function ({ ctx, id, x, y, state: { selected, hover }, style, label }) {
+                                    // 後続の<script>で定義
+                                    return databaseNodeRenderer(this, { ctx, id, x, y, state: { selected, hover }, style, label });
+                                }));
+                            break;
+
+                        case nodeTypeDef.document:
+                            nodes.push(createNodeObjFromRowObj(rowObj, "custom",
+                                function ({ ctx, id, x, y, state: { selected, hover }, style, label }) {
+                                    // 後続の<script>で定義
+                                    return documentNodeRenderer(this, { ctx, id, x, y, state: { selected, hover }, style, label });
+                                }));
+                            break;
+
+                        case nodeTypeDef.external:
+                            nodes.push(createNodeObjFromRowObj(rowObj, "ellipse"));
+                            break;
+
+                        case nodeTypeDef.process:
+                            nodes.push(createNodeObjFromRowObj(rowObj, "box"));
+                            edges.push({
+                                arrows: "to",
+                                from: rowObj["INPUT(#)"],
+                                to: rowObj["#"],
+                                id: `${rowObj["INPUT(#)"]}_${rowObj["#"]}`,
+                                physics: false,
+                                color: "black"
+                            });
+                            edges.push({
+                                arrows: "to",
+                                from: rowObj["#"],
+                                to: rowObj["OUTPUT(#)"],
+                                id: `${rowObj["#"]}_${rowObj["OUTPUT(#)"]}`,
+                                physics: false,
+                                color: "black"
+                            });
+                            break;
+                    }
+                }
+            };
+            return { nodes: nodes, edges: edges, groups: groups }
+        }
+
+
+    </script>
+    <script id="main">
+        window.onload = (e) => {
+            const container = document.getElementById("container");
+            const options = {
+                layout: {
+                    randomSeed: randomSeed,
+                    improvedLayout: true,
+                    clusterThreshold: 150
+                },
+                interaction: {
+                    multiselect: true
+                }
+            };
+            const network = new vis.Network(container, createDataFromDefString(defTableTSV), options);
+        };
+    </script>
+
+    <script id="nodeRenderer">
+        const databaseNodeRenderer = (nodeObj, { ctx, id, x, y, state: { selected, hover }, style, label }) => {
+            const textSize = nodeObj.labelModule.getTextSize(ctx, nodeObj.selected, nodeObj.hover);
+            nodeObj.width = textSize.width + 10;
+            nodeObj.height = textSize.height * 3 + 10;
+            return {
+                drawNode() {
+                    nodeObj.left = x - nodeObj.width / 2;
+                    nodeObj.top = y - nodeObj.height / 2;
+                    nodeObj.margin = { top: 5, right: 5, bottom: 5, left: 5 };
+                    nodeObj.initContextForDraw(ctx, style);
+
+                    const f = 1 / 3;
+                    const wEllipse = nodeObj.width;
+                    const hEllipse = nodeObj.height * f;
+
+                    const kappa = 0.5522848,
+                        ox = (wEllipse / 2) * kappa, // control point offset horizontal
+                        oy = (hEllipse / 2) * kappa, // control point offset vertical
+                        xe = nodeObj.left + wEllipse, // x-end
+                        ye = nodeObj.top + hEllipse, // y-end
+                        xm = nodeObj.left + wEllipse / 2, // x-middle
+                        ym = nodeObj.top + hEllipse / 2, // y-middle
+                        ymb = nodeObj.top + (nodeObj.height - hEllipse / 2), // y-midlle, bottom ellipse
+                        yeb = nodeObj.top + nodeObj.height; // y-end, bottom ellipse
+
+                    ctx.beginPath();
+                    ctx.moveTo(xe, ym);
+
+                    ctx.bezierCurveTo(xe, ym + oy, xm + ox, ye, xm, ye);
+                    ctx.bezierCurveTo(xm - ox, ye, nodeObj.left, ym + oy, nodeObj.left, ym);
+
+                    ctx.bezierCurveTo(nodeObj.left, ym - oy, xm - ox, nodeObj.top, xm, nodeObj.top);
+                    ctx.bezierCurveTo(xm + ox, nodeObj.top, xe, ym - oy, xe, ym);
+
+                    ctx.lineTo(xe, ymb);
+
+                    ctx.bezierCurveTo(xe, ymb + oy, xm + ox, yeb, xm, yeb);
+                    ctx.bezierCurveTo(xm - ox, yeb, nodeObj.left, ymb + oy, nodeObj.left, ymb);
+
+                    ctx.lineTo(nodeObj.left, ym);
+
+                    nodeObj.performFill(ctx, style);
+                    nodeObj.updateBoundingBox(nodeObj.left, nodeObj.top, ctx, selected, hover);
+
+                    nodeObj.labelModule.draw(
+                        ctx,
+                        nodeObj.left + nodeObj.width / 2,
+                        ye + textSize.height / 2 + nodeObj.height / 7,
+                        selected,
+                        hover
+                    );
+
+                },
+                drawExternalLabel() {
+
+                },
+                nodeDimensions: { width: nodeObj.width, height: nodeObj.height }
+            }
+        };
+
+        const documentNodeRenderer = (nodeObj, { ctx, id, x, y, state: { selected, hover }, style, label }) => {
+            const textSize = nodeObj.labelModule.getTextSize(ctx, nodeObj.selected, nodeObj.hover);
+            const width = textSize.width + 20;
+            const height = textSize.height + 20;
+
+            return {
+                drawNode() {
+                    const x_left = x - width / 2;
+                    const x_right = x_left + width;
+                    const y_top = y - height / 2;
+                    const y_bottom = y_top + height;
+                    const x_ctl_1 = x_left + width / 3 * 2;
+                    const y_ctl_1 = y_top + height / 3 * 2;
+                    const x_ctl_2 = x_left + width / 3;
+                    const y_ctl_2 = y_top + height / 3 * 4;
+
+                    nodeObj.resize(ctx, selected, hover);
+                    nodeObj.left = x_left;
+                    nodeObj.top = y_top;
+                    nodeObj.width = width;
+                    nodeObj.height = height;
+                    nodeObj.margin = { top: 5, right: 5, bottom: 5, left: 5 };
+                    nodeObj.initContextForDraw(ctx, style);
+
+                    ctx.beginPath();
+                    ctx.moveTo(x_left, y_top);
+                    ctx.lineTo(x_right, y_top);
+                    ctx.lineTo(x_right, y_bottom);
+                    ctx.bezierCurveTo(x_ctl_1, y_ctl_1, x_ctl_2, y_ctl_2, x_left, y_bottom);
+                    ctx.closePath();
+
+                    nodeObj.performFill(ctx, style);
+                    nodeObj.updateBoundingBox(x, y, ctx, selected, hover);
+
+                    nodeObj.labelModule.draw(
+                        ctx,
+                        nodeObj.left + width / 2,
+                        nodeObj.top + height / 5 + textSize.height / 2,
+                        selected,
+                        hover
+                    );
+
+                },
+                drawExternalLabel() {
+
+                },
+                nodeDimensions: { width: width, height: height }
+            }
+        }
+    </script>
+
+    <script type="text/javascript" src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"></script>
+</body>
+</html>

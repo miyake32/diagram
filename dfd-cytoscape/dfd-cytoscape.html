@@ -1,0 +1,473 @@
+<html>
+
+<head>
+    <title>Data Flow Diagram</title>
+</head>
+
+<body>
+    <div id="cy" style="width: 100%; height: 100%"></div>
+    <script id="tsv-parser">
+        // Excelからコピペしたセル中に複数行テキストを含むとTSVの構造が崩れるので補正する
+        function sanitizeMultilineCellsInTsv(tsvString) {
+            let str = '';
+
+            // lineの先頭がダブルクオートの外にいる（＝１つのセルの複数行テキストの途中ではない）フラグ
+            let outOfDoubleQuote = true;
+            for (const line of tsvString.split(/\n|\r\n/)) {
+                const splittedLine = line.split('"');
+                const countOfDoubleQuote = splittedLine.length - 1; // 0, 1, 2があり得る
+
+                if (outOfDoubleQuote) {
+                    switch (countOfDoubleQuote) {
+                        case 0:
+                            str = str + line + '\n';
+                            break;
+                        case 1:
+                            str = str + line.replace('"', '') + '<br>';
+                            outOfDoubleQuote = false;
+                            break;
+                        default:
+                            throw new Error(`Invalid TSV String: ${line}`);
+                    }
+                } else {
+                    switch (countOfDoubleQuote) {
+                        case 0:
+                            str = str + line + '<br>';
+                            break;
+                        case 1:
+                            str = str + line.replace('"', '') + '\n';
+                            outOfDoubleQuote = true;
+                            break;
+                        case 2:
+                            str = str + line.replace('"', '').replace('"', '') + '<br>';
+                            break;
+                        default:
+                            throw new Error(`Invalid TSV String: ${line}`);
+                    }
+                }
+            }
+            return str;
+        }
+
+        function parseTsv(tsvString, tsvColDef, isBlankRowObj, funcToModifyRowObj) {
+            const fixedTsvString = sanitizeMultilineCellsInTsv(tsvString);
+            const columns = [];
+            const rows = [];
+            const reversedTsvColDef = Object.fromEntries(Object.entries(tsvColDef).map(([k, v]) => [v, k]));
+            for (const line of fixedTsvString.split(/\n|\r\n/)) {
+                const cells = line.split(/\t/);
+                if (cells.length < 2) {
+                    continue;
+                } else if (columns.length === 0) {
+                    Array.prototype.push.apply(columns, cells);
+                } else {
+                    const rowObj = {};
+                    columns.forEach((k, i) => {
+                        const key = reversedTsvColDef[k];
+                        if (key === 'note') {
+                            // noteの表示(tippy.js)は改行に<br>を使う
+                            rowObj[key] = cells[i]
+                        } else {
+                            // その他の要素の表示(cytoscape.js)は改行に\nを使う
+                            rowObj[key] = cells[i].replaceAll('<br>', '\n');
+                        }
+                    });
+                    if (isBlankRowObj(rowObj)) {
+                        continue;
+                    }
+                    funcToModifyRowObj && funcToModifyRowObj(rowObj);
+                    rows.push(rowObj);
+                }
+            }
+            return rows;
+        }
+    </script>
+    <script id="groups_def">
+        const groupsTsv = `
+#	グループ名	色	備考	親グループID
+g1	プラットフォームA	赤	整理の対象	
+g2	アプリ１	赤	"担当：○○
+企画中"	g1
+g3	アプリ２	緑	"担当：△△
+開発中
+データ構造が一部固まっていない"	g1
+g4	外部システムB		担当：X社	
+g5	外部システムC		担当：Y社	
+g6	ユーザ部署	強調	"ヒアリング調整中
+調整担当：××"	
+`
+
+        const groupsColDef = {
+            id: '#',
+            label: 'グループ名',
+            color: '色',
+            note: '備考',
+            parent_group: '親グループID'
+        };
+        const groups = parseTsv(groupsTsv, groupsColDef, r => !r.label);
+    </script>
+    <script id="data_elements_def">
+        const dataElementsTsv = `
+#	データ要素名	レベル	タイプ	グループID	色	備考
+d1	データA	3	データストア	g2		
+d2	"データB
+※未確定"	2	データストア	g3	強調	"データ仕様が未確定
+要スケジュール確認"
+d3	データC	2	データストア	g3	緑	
+d4	データB	1	データストア	g4		
+d5	データC	1	データストア	g5		
+d6	帳票	1	帳票	g6	強調	運用のヒアリングが必要
+`
+
+        const dataElementsColDef = {
+            id: '#',
+            label: 'データ要素名',
+            type: 'タイプ',
+            level: 'レベル',
+            group: 'グループID',
+            color: '色',
+            note: '備考'
+        }
+        const dataElementTypeDef = {
+            datastore: 'データストア',
+            document: '帳票',
+            external: '外的要素'
+        }
+        const reversedDataElementTypeDef = Object.fromEntries(Object.entries(dataElementTypeDef).map(([k, v]) => [v, k]));
+        const dataElements = parseTsv(dataElementsTsv, dataElementsColDef, r => !r.label, d => d.type = reversedDataElementTypeDef[d.type]);
+        const dataElementsById = Object.fromEntries(dataElements.map(e => [e.id, e]));
+    </script>
+    <script id="processes_def">
+        const processesTsv = `
+#	プロセス名	色	備考	グループ	インプット要素	アウトプット要素	インプット備考	アウトプット備考
+p1	"データB連携
+※未確定"	強調	"連携はするが加工の仕様が未確定
+要スケジュール確認"	g3	d4	d2		
+p2	データC連携			g3	d5	d3		？？？
+					d6		運用が不明確	
+p3	データA作成			g2	d2	d1		
+					d3			
+p4															
+`;
+        // (1){id, label, color, note}と(2){input_elem, output_elem, input_note, output_note}は1:Nの関係になる
+        // (2)が1以上になる場合(1)としては最も上にある行の値が採用される
+        const processesColDef = {
+            id: '#',
+            label: 'プロセス名',
+            color: '色',
+            group: 'グループ',
+            note: '備考',
+            input_elem: 'インプット要素',
+            output_elem: 'アウトプット要素',
+            input_note: 'インプット備考',
+            output_note: 'アウトプット備考'
+        };
+        const processes_singleTable = parseTsv(processesTsv, processesColDef, r => !r.input_elem && !r.output_elem);
+        const processes = [];
+        let currentProcessId = 'undefined';
+        let currentProcessIndex = -1;
+
+        // テーブル構造のプロセス定義を{id, label, ..., input: [{data_elem, ...}, ...], output: [...]}の形に変換
+        for (let i = 0; i < processes_singleTable.length; i++) {
+            const processRow = processes_singleTable[i];
+            if (!!processRow.id && processRow.id !== currentProcessId) {
+                currentProcessId = processRow.id;
+                currentProcessIndex++;
+                processes[currentProcessIndex] = {
+                    id: processRow.id,
+                    label: processRow.label,
+                    color: processRow.color,
+                    note: processRow.note,
+                    group: processRow.group,
+                    input: [],
+                    output: [],
+                };
+            }
+            if (!!processRow.input_elem) {
+                processes[currentProcessIndex].input.push({
+                    data_elem: processRow.input_elem,
+                    note: processRow.input_note
+                });
+            }
+            if (!!processRow.output_elem) {
+                processes[currentProcessIndex].output.push({
+                    data_elem: processRow.output_elem,
+                    note: processRow.output_note
+                });
+            }
+        }
+    </script>
+
+    <script id="configuration">
+        // "color"列の値と色の対応付け  
+        const colorDef = {
+            "白": { border: "#a5a5a5", background: "#ffffff", highlight: { border: "#3f3f3f", background: "#d9d9d9" } },
+            "青": { border: "#5b9bd5", background: "#deebf7", highlight: { border: "#1e4e79", background: "#9dc3e6" } },
+            "赤": { border: "#ed7d31", background: "#fbe5d6", highlight: { border: "#833c0b", background: "#f4b183" } },
+            "黄": { border: "#ffc000", background: "#fff2cc", highlight: { border: "#7f6000", background: "#ffd965" } },
+            "緑": { border: "#70ad47", background: "#e2efd9", highlight: { border: "#375623", background: "#a8d08d" } },
+            "強調": { border: "#ff0000", background: "#ffff00", highlight: { border: "#7e0000", background: "#DBD600" } },
+        };
+        const defaultColor = "白"; 
+    </script>
+
+    <!--ライブラリの読み込み 
+        - Cytoscape.js: ネットワークグラフを描画
+        - Cytoscape-popper.js: Cytoscape.jsのグラフ上でツールチップ(備考)を表示するためのプラグイン
+        - popper.js, tippy.js: 上記プラグインの依存先
+        - cytoscape-klay.js: Cytoscape.jsのグラフ上のノードの配置を最適化するためのプラグイン
+        - klay.js 上記プラグインの依存先
+    -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.24.0/cytoscape.min.js"
+        integrity="sha512-RNg7R9mgoEi0QKVP6HktZpG8CwaojI4YVO9UiI+GXnfC2Bif3/7vcJDim9NZ3ZZuhFGEwuGzmnHwXMOAzjM2qw=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://unpkg.com/@popperjs/core@2"></script>
+    <script src="https://unpkg.com/tippy.js@6"></script>
+    <script src="http://cdn.jsdelivr.net/gh/cytoscape/cytoscape.js-popper/cytoscape-popper.js"></script>
+    <script src="http://cdn.jsdelivr.net/gh/kieler/klayjs/klay.js"></script>
+    <script src="http://cdn.jsdelivr.net/gh/cytoscape/cytoscape.js-klay/cytoscape-klay.js"></script>
+
+    <script id="initialize-group-dataelem-process">
+        const elements = [];
+        groups.forEach(e => elements.push({
+            group: 'nodes',
+            data: {
+                id: e.id,
+                parent: e.parent_group,
+                label: e.label,
+                note: e.note,
+                bdcolor: colorDef[e.color || defaultColor].border,
+                bgcolor: colorDef[e.color || defaultColor].background,
+                activebgcolor: colorDef[e.color || defaultColor].highlight.background,
+                activebdcolor: colorDef[e.color || defaultColor].highlight.border,
+            },
+            classes: ['group-node']
+        }));
+        dataElements.forEach(e => elements.push({
+            group: 'nodes',
+            data: {
+                id: e.id,
+                parent: e.group,
+                label: e.label,
+                note: e.note,
+                level: e.level,
+                bdcolor: colorDef[e.color || defaultColor].border,
+                bgcolor: colorDef[e.color || defaultColor].background,
+                activebgcolor: colorDef[e.color || defaultColor].highlight.background,
+                activebdcolor: colorDef[e.color || defaultColor].highlight.border,
+            },
+            classes: [`type-${e.type}`, 'member-node']
+        }));
+        processes.forEach(e => {
+            elements.push({
+                group: 'nodes',
+                data: {
+                    id: e.id,
+                    parent: e.group,
+                    label: e.label,
+                    level: (Math.max.apply(null, e.input.map(f => dataElementsById[f.data_elem].level)) + Math.min.apply(null, e.output.map(f => dataElementsById[f.data_elem].level))) / 2,
+                    note: e.note,
+                    bdcolor: colorDef[e.color || defaultColor].border,
+                    bgcolor: colorDef[e.color || defaultColor].background,
+                    activebgcolor: colorDef[e.color || defaultColor].highlight.background,
+                    activebdcolor: colorDef[e.color || defaultColor].highlight.border,
+                },
+                classes: ['type-process', 'member-node']
+            });
+            e.input.forEach(f => elements.push({
+                group: 'edges',
+                data: {
+                    id: `${f.data_elem}_${e.id}`,
+                    source: f.data_elem,
+                    target: e.id,
+                    color: colorDef[f.color || defaultColor].border,
+                    note: f.note,
+                    activecolor: colorDef[f.color || defaultColor].highlight.border,
+                },
+                classes: []
+            }));
+            e.output.forEach(f => elements.push({
+                group: 'edges',
+                data: {
+                    id: `${e.id}_${f.data_elem}`,
+                    source: e.id,
+                    target: f.data_elem,
+                    color: colorDef[f.color || defaultColor].border,
+                    note: f.note,
+                    activecolor: colorDef[f.color || defaultColor].highlight.border,
+                },
+                classes: []
+            }));
+        });
+        const horizontalAlignment = [];
+        let currentLevel;
+        for (const e of elements.filter(e => e.data.level).sort((a, b) => a.data.level - b.data.level)) {
+            if (currentLevel !== e.data.level) {
+                horizontalAlignment.push([]);
+                currentLevel = e.data.level;
+            }
+            horizontalAlignment[horizontalAlignment.length - 1].push({ node: `#${e.data.id}` });
+        }
+    </script>
+
+    <script id="style-configuration">
+        // 備考があることを示すアイコン画像をSVGで定義
+        const noteIconSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="#cc9900" class="bi bi-sticky-fill" viewBox="0 0 16 16"><path d="M2.5 1A1.5 1.5 0 0 0 1 2.5v11A1.5 1.5 0 0 0 2.5 15h6.086a1.5 1.5 0 0 0 1.06-.44l4.915-4.914A1.5 1.5 0 0 0 15 8.586V2.5A1.5 1.5 0 0 0 13.5 1h-11zm6 8.5a1 1 0 0 1 1-1h4.396a.25.25 0 0 1 .177.427l-5.146 5.146a.25.25 0 0 1-.427-.177V9.5z"/></svg>';
+        const noteIconUri = 'data:image/svg+xml;utf8,' + encodeURIComponent(noteIconSvg);
+
+        const styleDef = [{
+            selector: 'node',
+            style: {
+                'background-color': 'data(bgcolor)',
+                'border-color': 'data(bdcolor)',
+            }
+        }, {
+            selector: 'node:selected, node.highlight',
+            style: {
+                'background-color': 'data(activebgcolor)',
+                'border-color': 'data(activebdcolor)',
+                'font-weight': 'bold',
+            }
+        }, {
+            selector: '.group-node',
+            style: {
+                'label': 'data(label)',
+                'text-margin-y': '-5',
+                'shape': 'rectangle',
+                'width': 'label',
+                'padding': '6',
+                'border-width': '2',
+            }
+        }, {
+            selector: '.member-node',
+            style: {
+                'label': 'data(label)',
+                'text-wrap': 'wrap',
+                'text-justification': 'center',
+                'text-valign': 'center',
+                'text-halign': 'center',
+                'width': 'label',
+                'height': 'label',
+                'padding': '15 6 1 6',
+                'border-width': '1px',
+            }
+        }, {
+            selector: 'edge',
+            style: {
+                'curve-style': 'bezier',
+                'target-arrow-shape': 'triangle-backcurve',
+                'line-color': 'data(color)',
+                'target-arrow-color': 'data(color)',
+            }
+        }, {
+            selector: 'edge:selected, edge.highlight',
+            style: {
+                'line-color': 'data(activecolor)',
+                'target-arrow-color': 'data(activecolor)',
+                'width': '4',
+            }
+        }, {
+            selector: '.type-process',
+            style: {
+                'shape': 'ellipse',
+            }
+        }, {
+            selector: '.type-datastore',
+            style: {
+                'shape': 'barrel',
+            }
+        }, {
+            selector: '.type-document',
+            style: {
+                'shape': 'polygon',
+                'shape-polygon-points': '-1 -1 1 -1 1 0.7 0.9 0.658 0.8 0.629 0.7 0.613 0.6 0.60 0.5 0.6 0.4 0.608 0.3 0.625 0.2 0.658 0.1 0.717 0 0.8 -0.1 0.883 -0.2 0.942 -0.3 0.975 -0.4 0.992 -0.5 1 -0.6 0.992 -0.7 0.975 -0.8 0.942 -0.9 0.883 -1 0.8',
+                'text-margin-y': '-3',
+                'padding-top': '18'
+            }
+        }, {
+            selector: '.type-external',
+            style: {
+                'shape': 'hexagon',
+            }
+        }, {
+            selector: 'node[?note]',
+            style: {
+                'background-image': noteIconUri,
+                'background-width': '13px',
+                'background-height': '16px',
+                'background-position-x': '100%',
+                'background-position-y': '0px',
+                'background-offset-y': '0px',
+                'background-clip': 'none',
+                'background-image-containment': 'over',
+            }
+        }, {
+            selector: 'edge[?note]',
+            style: {
+                'mid-source-arrow-shape': 'diamond',
+                'mid-source-arrow-color': '#cc9900'
+
+            }
+        }]
+    </script>
+
+    <script id="initialize">
+        cytoscape.use(cytoscapePopper);
+        cytoscape.use(cytoscapeKlay);
+        const cy = cytoscape({
+            container: document.getElementById('cy'),
+            elements: elements,
+            layout: {
+                name: 'klay',
+                animate: false,
+                klay: {
+                    direction: 'RIGHT',
+                    addUnnecessaryBendpoints: true,
+                    layoutHierarchy: true,
+                    randomizationSeed: 3,
+                }
+
+            },
+            style: styleDef
+        });
+
+        // 要素選択時に関連する要素を強調表示するためのイベント処理
+        cy.on('select', (e) => {
+            e.target.edgesWith('node').addClass('highlight');
+            e.target.neighborhood().addClass('highlight');
+            e.target.sources().addClass('highlight');
+            e.target.targets().addClass('highlight');
+        });
+        cy.on('unselect', (e) => {
+            e.target.edgesWith('node').removeClass('highlight');
+            e.target.neighborhood().removeClass('highlight');
+            e.target.sources().removeClass('highlight');
+            e.target.targets().removeClass('highlight');
+        });
+
+        // マウスオーバーで備考を表示するためのライブラリ初期化＆イベント処理
+        const tooltip = new tippy(document.createElement('div'), {
+            trigger: 'manual',
+            animation: 'fade',
+            followCursor: false,
+            hideOnClick: false,
+            placement: 'auto',
+            offset: [0, 10],
+            allowHTML: true,
+            sticky: true,
+        });
+        cy.on('tapdragover', '[?note]', (e) => {
+            tooltip.setProps({
+                getReferenceClientRect: e.target.popperRef().getBoundingClientRect,
+            });
+            tooltip.setContent(e.target.data('note'));
+            tooltip.show();
+        });
+        cy.on('tapdragout', '[?note]', (e) => {
+            tooltip.hide();
+        });
+    </script>
+
+</body>
+
+</html>
